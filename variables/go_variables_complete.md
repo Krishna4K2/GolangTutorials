@@ -1150,3 +1150,856 @@ type DatabaseConfig struct {
 type LoggingConfig struct {
     Level  string `json:"level"`
     Format string `json:"format"`
+    Output string `json:"output"`
+}
+
+// Default configuration values
+var defaultConfig = Config{
+    Server: ServerConfig{
+        Host:         "localhost",
+        Port:         8080,
+        ReadTimeout:  30 * time.Second,
+        WriteTimeout: 30 * time.Second,
+    },
+    Database: DatabaseConfig{
+        Host:     "localhost",
+        Port:     5432,
+        Username: "app_user",
+        Database: "app_db",
+    },
+    Logging: LoggingConfig{
+        Level:  "info",
+        Format: "json",
+        Output: "stdout",
+    },
+}
+
+// Load configuration from file or use defaults
+func LoadConfig(filename string) (*Config, error) {
+    config := defaultConfig  // Start with defaults
+    
+    // Try to read config file
+    data, err := os.ReadFile(filename)
+    if err != nil {
+        if os.IsNotExist(err) {
+            fmt.Printf("Config file %s not found, using defaults\n", filename)
+            return &config, nil
+        }
+        return nil, fmt.Errorf("failed to read config file: %w", err)
+    }
+    
+    // Parse JSON config
+    if err := json.Unmarshal(data, &config); err != nil {
+        return nil, fmt.Errorf("failed to parse config: %w", err)
+    }
+    
+    // Override with environment variables
+    if host := os.Getenv("SERVER_HOST"); host != "" {
+        config.Server.Host = host
+    }
+    if port := os.Getenv("SERVER_PORT"); port != "" {
+        var p int
+        if _, err := fmt.Sscanf(port, "%d", &p); err == nil {
+            config.Server.Port = p
+        }
+    }
+    
+    return &config, nil
+}
+
+// Validate configuration
+func (c *Config) Validate() error {
+    if c.Server.Port <= 0 || c.Server.Port > 65535 {
+        return fmt.Errorf("invalid server port: %d", c.Server.Port)
+    }
+    
+    if c.Database.Username == "" {
+        return fmt.Errorf("database username is required")
+    }
+    
+    validLevels := map[string]bool{
+        "debug": true, "info": true, "warn": true, "error": true,
+    }
+    if !validLevels[c.Logging.Level] {
+        return fmt.Errorf("invalid log level: %s", c.Logging.Level)
+    }
+    
+    return nil
+}
+
+func main() {
+    config, err := LoadConfig("app.json")
+    if err != nil {
+        fmt.Printf("Error loading config: %v\n", err)
+        return
+    }
+    
+    if err := config.Validate(); err != nil {
+        fmt.Printf("Invalid config: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Server: %s:%d\n", config.Server.Host, config.Server.Port)
+    fmt.Printf("Database: %s@%s:%d/%s\n", 
+        config.Database.Username, config.Database.Host, 
+        config.Database.Port, config.Database.Database)
+}
+```
+
+### Data Processing Pipeline
+```go
+package main
+
+import (
+    "fmt"
+    "strings"
+    "time"
+)
+
+// Record represents a data record to process
+type Record struct {
+    ID        int
+    Name      string
+    Email     string
+    Status    string
+    CreatedAt time.Time
+}
+
+// Processing statistics
+type ProcessingStats struct {
+    TotalRecords   int
+    ValidRecords   int
+    InvalidRecords int
+    ProcessedAt    time.Time
+    Duration       time.Duration
+}
+
+// Data processor with configurable options
+type DataProcessor struct {
+    emailDomain     string
+    requiredFields  []string
+    statusWhitelist []string
+    batchSize       int
+}
+
+// Create new processor with defaults
+func NewDataProcessor() *DataProcessor {
+    return &DataProcessor{
+        emailDomain:     "@company.com",
+        requiredFields:  []string{"Name", "Email"},
+        statusWhitelist: []string{"active", "pending", "inactive"},
+        batchSize:       100,
+    }
+}
+
+// Process records with validation and transformation
+func (dp *DataProcessor) ProcessRecords(records []Record) (*ProcessingStats, []Record, error) {
+    startTime := time.Now()
+    
+    var validRecords []Record
+    var invalidCount int
+    
+    // Process in batches
+    for i := 0; i < len(records); i += dp.batchSize {
+        end := i + dp.batchSize
+        if end > len(records) {
+            end = len(records)
+        }
+        
+        batch := records[i:end]
+        fmt.Printf("Processing batch %d-%d...\n", i+1, end)
+        
+        for _, record := range batch {
+            if dp.validateRecord(record) {
+                processedRecord := dp.transformRecord(record)
+                validRecords = append(validRecords, processedRecord)
+            } else {
+                invalidCount++
+            }
+        }
+    }
+    
+    stats := &ProcessingStats{
+        TotalRecords:   len(records),
+        ValidRecords:   len(validRecords),
+        InvalidRecords: invalidCount,
+        ProcessedAt:    startTime,
+        Duration:       time.Since(startTime),
+    }
+    
+    return stats, validRecords, nil
+}
+
+// Validate record according to business rules
+func (dp *DataProcessor) validateRecord(record Record) bool {
+    // Check required fields
+    if strings.TrimSpace(record.Name) == "" {
+        return false
+    }
+    
+    if strings.TrimSpace(record.Email) == "" {
+        return false
+    }
+    
+    // Validate email format
+    if !strings.Contains(record.Email, "@") {
+        return false
+    }
+    
+    // Check status whitelist
+    statusValid := false
+    for _, validStatus := range dp.statusWhitelist {
+        if record.Status == validStatus {
+            statusValid = true
+            break
+        }
+    }
+    
+    if !statusValid {
+        return false
+    }
+    
+    return true
+}
+
+// Transform record (normalize data)
+func (dp *DataProcessor) transformRecord(record Record) Record {
+    // Normalize name (title case)
+    record.Name = strings.Title(strings.ToLower(strings.TrimSpace(record.Name)))
+    
+    // Normalize email (lowercase)
+    record.Email = strings.ToLower(strings.TrimSpace(record.Email))
+    
+    // Ensure company domain
+    if !strings.HasSuffix(record.Email, dp.emailDomain) {
+        parts := strings.Split(record.Email, "@")
+        if len(parts) == 2 {
+            record.Email = parts[0] + dp.emailDomain
+        }
+    }
+    
+    // Normalize status
+    record.Status = strings.ToLower(record.Status)
+    
+    return record
+}
+
+func main() {
+    // Sample data
+    rawRecords := []Record{
+        {ID: 1, Name: "john doe", Email: "JOHN@EXAMPLE.COM", Status: "Active", CreatedAt: time.Now()},
+        {ID: 2, Name: "", Email: "invalid", Status: "pending", CreatedAt: time.Now()},
+        {ID: 3, Name: "jane smith", Email: "jane@test.com", Status: "INACTIVE", CreatedAt: time.Now()},
+        {ID: 4, Name: "bob wilson", Email: "bob@company.com", Status: "active", CreatedAt: time.Now()},
+    }
+    
+    processor := NewDataProcessor()
+    stats, validRecords, err := processor.ProcessRecords(rawRecords)
+    
+    if err != nil {
+        fmt.Printf("Error processing records: %v\n", err)
+        return
+    }
+    
+    // Print statistics
+    fmt.Printf("\nProcessing completed in %v\n", stats.Duration)
+    fmt.Printf("Total records: %d\n", stats.TotalRecords)
+    fmt.Printf("Valid records: %d\n", stats.ValidRecords)
+    fmt.Printf("Invalid records: %d\n", stats.InvalidRecords)
+    fmt.Printf("Success rate: %.2f%%\n", 
+        float64(stats.ValidRecords)/float64(stats.TotalRecords)*100)
+    
+    // Print valid records
+    fmt.Println("\nValid records after processing:")
+    for _, record := range validRecords {
+        fmt.Printf("ID: %d, Name: %s, Email: %s, Status: %s\n",
+            record.ID, record.Name, record.Email, record.Status)
+    }
+}
+```
+
+### HTTP API Server with Variable Management
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "sync"
+    "time"
+)
+
+// User represents a user in our system
+type User struct {
+    ID        int       `json:"id"`
+    Name      string    `json:"name"`
+    Email     string    `json:"email"`
+    Status    string    `json:"status"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Server holds the application state
+type Server struct {
+    users    map[int]*User
+    nextID   int
+    mutex    sync.RWMutex
+    host     string
+    port     int
+    timeout  time.Duration
+    started  time.Time
+}
+
+// ServerStats represents server statistics
+type ServerStats struct {
+    TotalUsers    int           `json:"total_users"`
+    ActiveUsers   int           `json:"active_users"`
+    InactiveUsers int           `json:"inactive_users"`
+    Uptime        time.Duration `json:"uptime"`
+    StartedAt     time.Time     `json:"started_at"`
+}
+
+// Create new server instance
+func NewServer(host string, port int) *Server {
+    return &Server{
+        users:   make(map[int]*User),
+        nextID:  1,
+        host:    host,
+        port:    port,
+        timeout: 30 * time.Second,
+        started: time.Now(),
+    }
+}
+
+// Add sample data
+func (s *Server) seedData() {
+    sampleUsers := []*User{
+        {Name: "Alice Johnson", Email: "alice@company.com", Status: "active"},
+        {Name: "Bob Smith", Email: "bob@company.com", Status: "active"},
+        {Name: "Carol Davis", Email: "carol@company.com", Status: "inactive"},
+    }
+    
+    for _, user := range sampleUsers {
+        s.createUser(user)
+    }
+}
+
+// Create user (thread-safe)
+func (s *Server) createUser(user *User) *User {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    
+    user.ID = s.nextID
+    s.nextID++
+    user.CreatedAt = time.Now()
+    user.UpdatedAt = time.Now()
+    
+    if user.Status == "" {
+        user.Status = "active"
+    }
+    
+    s.users[user.ID] = user
+    return user
+}
+
+// Get user by ID (thread-safe)
+func (s *Server) getUser(id int) (*User, bool) {
+    s.mutex.RLock()
+    defer s.mutex.RUnlock()
+    
+    user, exists := s.users[id]
+    return user, exists
+}
+
+// Get all users (thread-safe)
+func (s *Server) getAllUsers() []*User {
+    s.mutex.RLock()
+    defer s.mutex.RUnlock()
+    
+    users := make([]*User, 0, len(s.users))
+    for _, user := range s.users {
+        users = append(users, user)
+    }
+    return users
+}
+
+// Update user (thread-safe)
+func (s *Server) updateUser(id int, updates *User) (*User, bool) {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    
+    user, exists := s.users[id]
+    if !exists {
+        return nil, false
+    }
+    
+    // Update fields if provided
+    if updates.Name != "" {
+        user.Name = updates.Name
+    }
+    if updates.Email != "" {
+        user.Email = updates.Email
+    }
+    if updates.Status != "" {
+        user.Status = updates.Status
+    }
+    
+    user.UpdatedAt = time.Now()
+    return user, true
+}
+
+// Get server statistics
+func (s *Server) getStats() *ServerStats {
+    s.mutex.RLock()
+    defer s.mutex.RUnlock()
+    
+    var activeCount, inactiveCount int
+    for _, user := range s.users {
+        if user.Status == "active" {
+            activeCount++
+        } else {
+            inactiveCount++
+        }
+    }
+    
+    return &ServerStats{
+        TotalUsers:    len(s.users),
+        ActiveUsers:   activeCount,
+        InactiveUsers: inactiveCount,
+        Uptime:        time.Since(s.started),
+        StartedAt:     s.started,
+    }
+}
+
+// HTTP Handlers
+
+func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+    switch r.Method {
+    case http.MethodGet:
+        s.handleGetUsers(w, r)
+    case http.MethodPost:
+        s.handleCreateUser(w, r)
+    default:
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+    }
+}
+
+func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
+    users := s.getAllUsers()
+    
+    w.Header().Set("Content-Type", "application/json")
+    if err := json.NewEncoder(w).Encode(users); err != nil {
+        http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+        return
+    }
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+    var user User
+    if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+        http.Error(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+    
+    // Validate required fields
+    if user.Name == "" || user.Email == "" {
+        http.Error(w, "Name and email are required", http.StatusBadRequest)
+        return
+    }
+    
+    createdUser := s.createUser(&user)
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(createdUser)
+}
+
+func (s *Server) handleUserByID(w http.ResponseWriter, r *http.Request) {
+    // Extract ID from URL path
+    idStr := r.URL.Path[len("/users/"):]
+    id, err := strconv.Atoi(idStr)
+    if err != nil {
+        http.Error(w, "Invalid user ID", http.StatusBadRequest)
+        return
+    }
+    
+    switch r.Method {
+    case http.MethodGet:
+        s.handleGetUser(w, r, id)
+    case http.MethodPut:
+        s.handleUpdateUser(w, r, id)
+    default:
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+    }
+}
+
+func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id int) {
+    user, exists := s.getUser(id)
+    if !exists {
+        http.Error(w, "User not found", http.StatusNotFound)
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(user)
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id int) {
+    var updates User
+    if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+        http.Error(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+    
+    user, exists := s.updateUser(id, &updates)
+    if !exists {
+        http.Error(w, "User not found", http.StatusNotFound)
+        return
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(user)
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+    stats := s.getStats()
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(stats)
+}
+
+// Start the server
+func (s *Server) Start() error {
+    // Setup routes
+    http.HandleFunc("/users", s.handleUsers)
+    http.HandleFunc("/users/", s.handleUserByID)
+    http.HandleFunc("/stats", s.handleStats)
+    
+    // Add sample data
+    s.seedData()
+    
+    addr := fmt.Sprintf("%s:%d", s.host, s.port)
+    fmt.Printf("Starting server on %s\n", addr)
+    fmt.Printf("Endpoints:\n")
+    fmt.Printf("  GET    /users     - List all users\n")
+    fmt.Printf("  POST   /users     - Create new user\n")
+    fmt.Printf("  GET    /users/:id - Get user by ID\n")
+    fmt.Printf("  PUT    /users/:id - Update user\n")
+    fmt.Printf("  GET    /stats     - Get server statistics\n")
+    
+    server := &http.Server{
+        Addr:         addr,
+        ReadTimeout:  s.timeout,
+        WriteTimeout: s.timeout,
+    }
+    
+    return server.ListenAndServe()
+}
+
+func main() {
+    // Server configuration
+    var host string = "localhost"
+    var port int = 8080
+    
+    // Override from environment if available
+    if envHost := os.Getenv("HOST"); envHost != "" {
+        host = envHost
+    }
+    if envPort := os.Getenv("PORT"); envPort != "" {
+        if p, err := strconv.Atoi(envPort); err == nil {
+            port = p
+        }
+    }
+    
+    server := NewServer(host, port)
+    
+    if err := server.Start(); err != nil {
+        log.Fatal("Server failed to start:", err)
+    }
+}
+```
+
+### Financial Calculator with Precision Handling
+```go
+package main
+
+import (
+    "fmt"
+    "math"
+)
+
+// Investment represents an investment calculation
+type Investment struct {
+    Principal       float64 // Initial amount
+    AnnualRate      float64 // Annual interest rate (as decimal)
+    CompoundPeriods int     // Times compounded per year
+    Years           int     // Investment period in years
+}
+
+// LoanPayment represents a loan payment calculation
+type LoanPayment struct {
+    Principal   float64 // Loan amount
+    AnnualRate  float64 // Annual interest rate (as decimal)
+    Years       int     // Loan term in years
+    Payments    int     // Payments per year
+}
+
+// FinancialCalculator provides various financial calculations
+type FinancialCalculator struct {
+    precision int // Decimal places for rounding
+}
+
+// Create new financial calculator
+func NewFinancialCalculator(precision int) *FinancialCalculator {
+    if precision < 0 {
+        precision = 2 // Default to 2 decimal places
+    }
+    return &FinancialCalculator{precision: precision}
+}
+
+// Round to specified precision
+func (fc *FinancialCalculator) round(value float64) float64 {
+    multiplier := math.Pow10(fc.precision)
+    return math.Round(value*multiplier) / multiplier
+}
+
+// Calculate compound interest
+func (fc *FinancialCalculator) CompoundInterest(inv Investment) (float64, error) {
+    if inv.Principal <= 0 {
+        return 0, fmt.Errorf("principal must be positive")
+    }
+    if inv.AnnualRate < 0 {
+        return 0, fmt.Errorf("interest rate cannot be negative")
+    }
+    if inv.CompoundPeriods <= 0 {
+        return 0, fmt.Errorf("compound periods must be positive")
+    }
+    if inv.Years < 0 {
+        return 0, fmt.Errorf("years cannot be negative")
+    }
+    
+    // A = P(1 + r/n)^(nt)
+    rate := inv.AnnualRate / float64(inv.CompoundPeriods)
+    exponent := float64(inv.CompoundPeriods * inv.Years)
+    amount := inv.Principal * math.Pow(1+rate, exponent)
+    
+    return fc.round(amount), nil
+}
+
+// Calculate monthly loan payment
+func (fc *FinancialCalculator) MonthlyPayment(loan LoanPayment) (float64, error) {
+    if loan.Principal <= 0 {
+        return 0, fmt.Errorf("loan amount must be positive")
+    }
+    if loan.AnnualRate < 0 {
+        return 0, fmt.Errorf("interest rate cannot be negative")
+    }
+    if loan.Years <= 0 {
+        return 0, fmt.Errorf("loan term must be positive")
+    }
+    if loan.Payments <= 0 {
+        return 0, fmt.Errorf("payments per year must be positive")
+    }
+    
+    // Handle zero interest rate
+    if loan.AnnualRate == 0 {
+        return fc.round(loan.Principal / float64(loan.Years*loan.Payments)), nil
+    }
+    
+    // M = P * [r(1+r)^n] / [(1+r)^n - 1]
+    monthlyRate := loan.AnnualRate / float64(loan.Payments)
+    totalPayments := float64(loan.Years * loan.Payments)
+    
+    numerator := loan.Principal * monthlyRate * math.Pow(1+monthlyRate, totalPayments)
+    denominator := math.Pow(1+monthlyRate, totalPayments) - 1
+    
+    payment := numerator / denominator
+    return fc.round(payment), nil
+}
+
+// Calculate total interest paid on loan
+func (fc *FinancialCalculator) TotalInterest(loan LoanPayment) (float64, error) {
+    monthlyPayment, err := fc.MonthlyPayment(loan)
+    if err != nil {
+        return 0, err
+    }
+    
+    totalPayments := float64(loan.Years * loan.Payments)
+    totalPaid := monthlyPayment * totalPayments
+    totalInterest := totalPaid - loan.Principal
+    
+    return fc.round(totalInterest), nil
+}
+
+// Calculate future value of annuity
+func (fc *FinancialCalculator) AnnuityFutureValue(payment float64, annualRate float64, years int, paymentsPerYear int) (float64, error) {
+    if payment <= 0 {
+        return 0, fmt.Errorf("payment must be positive")
+    }
+    if annualRate < 0 {
+        return 0, fmt.Errorf("interest rate cannot be negative")
+    }
+    if years <= 0 {
+        return 0, fmt.Errorf("years must be positive")
+    }
+    if paymentsPerYear <= 0 {
+        return 0, fmt.Errorf("payments per year must be positive")
+    }
+    
+    // Handle zero interest rate
+    if annualRate == 0 {
+        return fc.round(payment * float64(years*paymentsPerYear)), nil
+    }
+    
+    // FV = PMT * [((1+r)^n - 1) / r]
+    periodRate := annualRate / float64(paymentsPerYear)
+    totalPeriods := float64(years * paymentsPerYear)
+    
+    futureValue := payment * (math.Pow(1+periodRate, totalPeriods) - 1) / periodRate
+    return fc.round(futureValue), nil
+}
+
+// Calculate break-even point for investment
+func (fc *FinancialCalculator) BreakEvenTime(principal, targetAmount, annualRate float64, compoundPeriods int) (float64, error) {
+    if principal <= 0 {
+        return 0, fmt.Errorf("principal must be positive")
+    }
+    if targetAmount <= principal {
+        return 0, fmt.Errorf("target amount must be greater than principal")
+    }
+    if annualRate <= 0 {
+        return 0, fmt.Errorf("interest rate must be positive")
+    }
+    if compoundPeriods <= 0 {
+        return 0, fmt.Errorf("compound periods must be positive")
+    }
+    
+    // t = ln(A/P) / (n * ln(1 + r/n))
+    rate := annualRate / float64(compoundPeriods)
+    years := math.Log(targetAmount/principal) / (float64(compoundPeriods) * math.Log(1+rate))
+    
+    return fc.round(years), nil
+}
+
+// Investment comparison result
+type ComparisonResult struct {
+    InvestmentA InvestmentResult `json:"investment_a"`
+    InvestmentB InvestmentResult `json:"investment_b"`
+    Difference  float64          `json:"difference"`
+    Better      string           `json:"better"`
+}
+
+type InvestmentResult struct {
+    FinalAmount   float64 `json:"final_amount"`
+    TotalInterest float64 `json:"total_interest"`
+    EffectiveRate float64 `json:"effective_rate"`
+}
+
+// Compare two investments
+func (fc *FinancialCalculator) CompareInvestments(invA, invB Investment) (*ComparisonResult, error) {
+    amountA, err := fc.CompoundInterest(invA)
+    if err != nil {
+        return nil, fmt.Errorf("investment A: %w", err)
+    }
+    
+    amountB, err := fc.CompoundInterest(invB)
+    if err != nil {
+        return nil, fmt.Errorf("investment B: %w", err)
+    }
+    
+    resultA := InvestmentResult{
+        FinalAmount:   amountA,
+        TotalInterest: fc.round(amountA - invA.Principal),
+        EffectiveRate: fc.round((amountA/invA.Principal - 1) * 100),
+    }
+    
+    resultB := InvestmentResult{
+        FinalAmount:   amountB,
+        TotalInterest: fc.round(amountB - invB.Principal),
+        EffectiveRate: fc.round((amountB/invB.Principal - 1) * 100),
+    }
+    
+    difference := fc.round(math.Abs(amountA - amountB))
+    better := "A"
+    if amountB > amountA {
+        better = "B"
+    } else if amountA == amountB {
+        better = "Equal"
+    }
+    
+    return &ComparisonResult{
+        InvestmentA: resultA,
+        InvestmentB: resultB,
+        Difference:  difference,
+        Better:      better,
+    }, nil
+}
+
+func main() {
+    calculator := NewFinancialCalculator(2)
+    
+    fmt.Println("=== Financial Calculator Demo ===\n")
+    
+    // Compound Interest Example
+    fmt.Println("1. Compound Interest Calculation")
+    investment := Investment{
+        Principal:       10000.0, // $10,000
+        AnnualRate:      0.06,    // 6% annual rate
+        CompoundPeriods: 12,      // Monthly compounding
+        Years:           10,      // 10 years
+    }
+    
+    finalAmount, err := calculator.CompoundInterest(investment)
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    } else {
+        interestEarned := finalAmount - investment.Principal
+        fmt.Printf("Initial Investment: $%.2f\n", investment.Principal)
+        fmt.Printf("Final Amount: $%.2f\n", finalAmount)
+        fmt.Printf("Interest Earned: $%.2f\n", interestEarned)
+        fmt.Printf("Effective Rate: %.2f%%\n", (finalAmount/investment.Principal-1)*100)
+    }
+    
+    fmt.Println()
+    
+    // Loan Payment Example
+    fmt.Println("2. Loan Payment Calculation")
+    loan := LoanPayment{
+        Principal:  250000.0, // $250,000 mortgage
+        AnnualRate: 0.045,    // 4.5% annual rate
+        Years:      30,       // 30-year term
+        Payments:   12,       // Monthly payments
+    }
+    
+    monthlyPayment, err := calculator.MonthlyPayment(loan)
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    } else {
+        totalInterest, _ := calculator.TotalInterest(loan)
+        totalPaid := monthlyPayment * float64(loan.Years*loan.Payments)
+        
+        fmt.Printf("Loan Amount: $%.2f\n", loan.Principal)
+        fmt.Printf("Monthly Payment: $%.2f\n", monthlyPayment)
+        fmt.Printf("Total Interest: $%.2f\n", totalInterest)
+        fmt.Printf("Total Paid: $%.2f\n", totalPaid)
+    }
+    
+    fmt.Println()
+    
+    // Investment Comparison
+    fmt.Println("3. Investment Comparison")
+    invA := Investment{Principal: 5000, AnnualRate: 0.05, CompoundPeriods: 1, Years: 20}   // 5% annually
+    invB := Investment{Principal: 5000, AnnualRate: 0.048, CompoundPeriods: 12, Years: 20} // 4.8% monthly
+    
+    comparison, err := calculator.CompareInvestments(invA, invB)
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    } else {
+        fmt.Printf("Investment A (5%% annual): $%.2f (%.2f%% effective)\n", 
+            comparison.InvestmentA.FinalAmount, comparison.InvestmentA.EffectiveRate)
+        fmt.Printf("Investment B (4.8%% monthly): $%.2f (%.2f%% effective)\n", 
+            comparison.InvestmentB.FinalAmount, comparison.InvestmentB.EffectiveRate)
+        fmt.Printf("Difference: $%.
