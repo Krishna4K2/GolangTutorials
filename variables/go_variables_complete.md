@@ -887,3 +887,266 @@ if err != nil {
 // Avoid unnecessary allocations
 func inefficient() {
     var result string
+    for i := 0; i < 1000; i++ {
+        result += strconv.Itoa(i)  // Creates new string each time
+    }
+    return result
+}
+
+func efficient() string {
+    var builder strings.Builder
+    for i := 0; i < 1000; i++ {
+        builder.WriteString(strconv.Itoa(i))  // More efficient
+    }
+    return builder.String()
+}
+
+// Pre-allocate slices when size is known
+func inefficientSlice() []int {
+    var numbers []int
+    for i := 0; i < 1000; i++ {
+        numbers = append(numbers, i)  // May cause multiple reallocations
+    }
+    return numbers
+}
+
+func efficientSlice() []int {
+    numbers := make([]int, 0, 1000)  // Pre-allocate capacity
+    for i := 0; i < 1000; i++ {
+        numbers = append(numbers, i)  // No reallocations needed
+    }
+    return numbers
+}
+
+// Reuse variables when possible
+func processItems(items []string) {
+    var result string  // Declare once outside loop
+    for _, item := range items {
+        result = strings.ToUpper(item)  // Reuse variable
+        fmt.Println(result)
+    }
+}
+```
+
+---
+
+## Common Patterns
+
+### Initialization Patterns
+```go
+// Factory pattern
+func NewUser(name string, age int) *User {
+    return &User{
+        Name:      name,
+        Age:       age,
+        CreatedAt: time.Now(),
+        IsActive:  true,  // Default value
+    }
+}
+
+// Builder pattern
+type ConfigBuilder struct {
+    config Config
+}
+
+func NewConfigBuilder() *ConfigBuilder {
+    return &ConfigBuilder{
+        config: Config{
+            Timeout: 30 * time.Second,  // Default
+            MaxRetries: 3,              // Default
+        },
+    }
+}
+
+func (cb *ConfigBuilder) WithTimeout(timeout time.Duration) *ConfigBuilder {
+    cb.config.Timeout = timeout
+    return cb
+}
+
+func (cb *ConfigBuilder) Build() Config {
+    return cb.config
+}
+
+// Usage
+config := NewConfigBuilder().
+    WithTimeout(10 * time.Second).
+    Build()
+```
+
+### Option Pattern
+```go
+type Server struct {
+    host    string
+    port    int
+    timeout time.Duration
+}
+
+type ServerOption func(*Server)
+
+func WithHost(host string) ServerOption {
+    return func(s *Server) {
+        s.host = host
+    }
+}
+
+func WithPort(port int) ServerOption {
+    return func(s *Server) {
+        s.port = port
+    }
+}
+
+func NewServer(options ...ServerOption) *Server {
+    server := &Server{
+        host:    "localhost",  // Default
+        port:    8080,         // Default
+        timeout: 30 * time.Second,  // Default
+    }
+    
+    for _, option := range options {
+        option(server)
+    }
+    
+    return server
+}
+
+// Usage
+server := NewServer(
+    WithHost("example.com"),
+    WithPort(9000),
+)
+```
+
+### Error Handling Patterns
+```go
+// Multiple return values
+func divide(a, b float64) (float64, error) {
+    if b == 0 {
+        return 0, errors.New("division by zero")
+    }
+    return a / b, nil
+}
+
+// Result and error pattern
+func processFile(filename string) ([]byte, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return nil, fmt.Errorf("failed to open file: %w", err)
+    }
+    defer file.Close()
+    
+    data, err := io.ReadAll(file)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read file: %w", err)
+    }
+    
+    return data, nil
+}
+
+// Early return pattern
+func validateUser(user User) error {
+    if user.Name == "" {
+        return errors.New("name is required")
+    }
+    
+    if user.Age < 0 {
+        return errors.New("age must be positive")
+    }
+    
+    if user.Email == "" {
+        return errors.New("email is required")
+    }
+    
+    return nil  // All validations passed
+}
+```
+
+### Concurrency Patterns
+```go
+// Channel communication
+func worker(id int, jobs <-chan int, results chan<- int) {
+    for job := range jobs {
+        result := expensiveOperation(job)
+        results <- result
+    }
+}
+
+func main() {
+    jobs := make(chan int, 100)
+    results := make(chan int, 100)
+    
+    // Start workers
+    for w := 1; w <= 3; w++ {
+        go worker(w, jobs, results)
+    }
+    
+    // Send jobs
+    for j := 1; j <= 9; j++ {
+        jobs <- j
+    }
+    close(jobs)
+    
+    // Collect results
+    for r := 1; r <= 9; r++ {
+        <-results
+    }
+}
+
+// Mutex for shared state
+type Counter struct {
+    mu    sync.Mutex
+    value int
+}
+
+func (c *Counter) Increment() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.value++
+}
+
+func (c *Counter) Value() int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.value
+}
+```
+
+---
+
+## Examples and Use Cases
+
+### Configuration Management
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "time"
+)
+
+// Configuration structure
+type Config struct {
+    Server   ServerConfig   `json:"server"`
+    Database DatabaseConfig `json:"database"`
+    Logging  LoggingConfig  `json:"logging"`
+}
+
+type ServerConfig struct {
+    Host         string        `json:"host"`
+    Port         int           `json:"port"`
+    ReadTimeout  time.Duration `json:"read_timeout"`
+    WriteTimeout time.Duration `json:"write_timeout"`
+}
+
+type DatabaseConfig struct {
+    Host     string `json:"host"`
+    Port     int    `json:"port"`
+    Username string `json:"username"`
+    Password string `json:"password"`
+    Database string `json:"database"`
+}
+
+type LoggingConfig struct {
+    Level  string `json:"level"`
+    Format string `json:"format"`
